@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   extractPageContent,
-  contentToMarkdown,
+  savePageContent,
   createTurndownService,
   DEFAULT_SELECTORS
 } from '../src/crawler.mjs';
@@ -67,17 +67,9 @@ async function sampleSelectors() {
     console.log(`✓ Text length: ${content.text.length} chars`);
     console.log(`✓ HTML length: ${content.html.length} chars`);
 
-    // Convert to markdown using the crawler's function
-    const markdownDoc = contentToMarkdown(content, turndownService);
-
-    // Save individual markdown file in progress subdirectory
-    const filename = urlToFilename(url);
-    const mdFilepath = path.join(progressDir, filename.replace('.json', '.md'));
-    fs.writeFileSync(mdFilepath, markdownDoc);
-    console.log(`✓ Saved markdown: progress/${path.basename(mdFilepath)}`);
-
-    // Collect for concatenated output
-    allMarkdownContent.push(markdownDoc);
+    // Use the shared savePageContent function (same as main crawler)
+    const filename = savePageContent(content, progressDir, turndownService, allMarkdownContent);
+    console.log(`✓ Saved: progress/${filename} (.json, .html, .md)`);
 
     // Preview
     console.log(`\nPreview (first 300 chars):\n${'─'.repeat(80)}`);
@@ -110,27 +102,6 @@ async function sampleSelectors() {
   console.log(`✓ Individual MD files: ${outputDir}/progress/`);
   console.log(`✓ Concatenated file: ${outputDir}/llms-full.sample.txt`);
   console.log(`✓ The sampler uses the same extraction logic as the main crawler`);
-}
-
-/**
- * Convert URL to safe filename (same logic as crawler)
- * @param {string} url - Page URL
- * @returns {string} Safe filename
- */
-function urlToFilename(url) {
-  const urlObj = new URL(url);
-  let filename = urlObj.pathname
-    .replace(/^\/documentation\/sitefinity-cms\/?/, '')
-    .replace(/\//g, '_')
-    .replace(/[^a-z0-9_-]/gi, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '');
-
-  if (!filename || filename === '') {
-    filename = 'index';
-  }
-
-  return `${filename}.json`;
 }
 
 // Run sampler

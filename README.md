@@ -48,20 +48,25 @@ By default (no arguments), it will:
 - Save each page as JSON (content + metadata), HTML (cleaned content), and Markdown
 - Generate `llms-full.txt` - a concatenated markdown file optimized for LLM consumption
 
-### Run the Sampler (Test)
-
-To test and analyze the selector strategy on the documentation site:
+### Run Tests
 
 ```bash
+# Run all tests
+npm test
+
+# Run only the sampler test
 npm run test:sample
+
+# Run version deduplication tests
+npm run test:dedup
 ```
 
-This will:
-- Open a browser window (headless: false)
-- Test various content selectors
-- Show which elements would be excluded
-- Display sample extracted content
-- List sample documentation links
+**Sampler test** - Tests the crawler's extraction logic on sample pages:
+- Runs headless browser
+- Tests content selectors
+- Shows which elements are excluded
+- Displays sample extracted content
+- Generates output files (JSON, HTML, MD) in `progress/` directory
 
 The sampler is useful for:
 - Debugging selector issues
@@ -77,16 +82,28 @@ To validate the JavaScript code with TypeScript:
 npm run typecheck
 ```
 
-This will check all `.mjs` files for type errors using TypeScript's type checker. Note: Some type warnings are expected due to DOM API usage in `page.evaluate()` contexts.
+This will check all `.mjs` files for type errors using TypeScript's type checker with JSDoc annotations.
 
 ## Configuration
+
+### Command-Line Configuration
+
+Pass `maxPages` as a command-line argument:
+
+```bash
+npm run crawl          # Unlimited pages (default)
+npm run crawl -- 100   # Limit to 100 pages
+npm run crawl -- 50    # Limit to 50 pages
+```
+
+### Code Configuration
 
 Edit [src/index.mjs](src/index.mjs) to customize crawler settings:
 
 ```javascript
 const crawler = new SitefinityCrawler({
   outputDir: './output',  // Where to save files
-  maxPages: 50            // Maximum pages to crawl
+  maxPages: Infinity      // Maximum pages to crawl (can be overridden by CLI arg)
 });
 ```
 
@@ -109,8 +126,8 @@ The crawler uses these selectors (defined in [src/crawler.mjs:14-36](src/crawler
 output/
 ├── llms-full.txt              # Concatenated markdown for LLM consumption
 ├── _summary.json              # Crawl statistics and metadata
-├── *.json                     # Individual page metadata files
 └── progress/
+    ├── *.json                 # Individual page metadata files
     ├── *.md                   # Individual markdown files
     └── *.html                 # Cleaned HTML files
 ```
@@ -166,28 +183,46 @@ The extracted HTML content after removing excluded elements.
 ```
 sitefinity-docs-crawler/
 ├── src/
-│   ├── crawler.mjs     # Main crawler class
-│   └── index.mjs       # Entry point
+│   ├── crawler.mjs     # Core crawler module with reusable functions
+│   └── index.mjs       # Entry point with CLI argument parsing
 ├── test/
-│   └── sampler.mjs     # Selector testing tool
+│   ├── sampler.mjs                      # Selector testing tool
+│   ├── version-dedup-test.mjs           # Version deduplication tests
+│   ├── breadcrumb-test.mjs              # Breadcrumb extraction tests
+│   └── whitespace-normalization-test.mjs # Whitespace tests
 ├── output/             # Crawled content (generated)
+│   ├── llms-full.txt   # Concatenated markdown for LLMs
+│   ├── _summary.json   # Crawl statistics
+│   └── progress/       # Individual page files (JSON, HTML, MD)
 ├── package.json        # Project configuration (ES modules)
-├── README.md          # Documentation
-└── .gitignore         # Git ignore rules
+├── tsconfig.json       # TypeScript configuration for type checking
+├── CLAUDE.md           # AI assistant guidance
+├── README.md           # Documentation
+└── .gitignore          # Git ignore rules
 ```
 
 ## How It Works
 
 1. **Initialization**: Launches Chromium browser with Playwright
 2. **Navigation**: Starts from the base documentation URL
-3. **Content Extraction**:
+3. **Version Deduplication** (for each discovered URL):
+   - Detects if URL contains a version number (e.g., `/152/page`)
+   - If versioned, attempts to fetch canonical (non-versioned) URL first
+   - Crawls canonical if it exists, otherwise crawls the versioned URL as exception
+   - Marks both canonical and versioned URLs as visited to prevent duplicates
+4. **Content Extraction**:
+   - Extracts breadcrumb navigation before processing
    - Waits for page to load
    - Removes excluded elements (nav, footer, etc.)
    - Extracts main content area
-   - Saves both structured data (JSON) and raw HTML
-4. **Link Discovery**: Finds all internal documentation links
-5. **Recursive Crawling**: Follows discovered links until max pages reached
-6. **Cleanup**: Generates summary and closes browser
+   - Normalizes whitespace in markdown output
+5. **File Saving** (in `progress/` directory):
+   - **JSON**: Structured metadata with breadcrumb array
+   - **HTML**: Cleaned HTML content
+   - **Markdown**: Frontmatter + normalized content
+6. **Link Discovery**: Finds all internal documentation links
+7. **Recursive Crawling**: Follows discovered links until max pages reached
+8. **Cleanup**: Generates summary and `llms-full.txt` concatenated file, closes browser
 
 ## Advanced Usage
 

@@ -331,6 +331,65 @@ export function contentToMarkdown(content, turndownService) {
   ].join('\n');
 }
 
+/**
+ * Convert URL to safe filename
+ * @param {string} url - Page URL
+ * @returns {string} Safe filename with .json extension
+ */
+export function urlToFilename(url) {
+  const urlObj = new URL(url);
+  let filename = urlObj.pathname
+    .replace(/^\/documentation\/sitefinity-cms\/?/, '')
+    .replace(/\//g, '_')
+    .replace(/[^a-z0-9_-]/gi, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+
+  if (!filename || filename === '') {
+    filename = 'index';
+  }
+
+  return `${filename}.json`;
+}
+
+/**
+ * Save extracted content to JSON, HTML, and Markdown files
+ * @param {ExtractedContent} content - Extracted page content
+ * @param {string} progressDir - Directory to save files
+ * @param {TurndownService} turndownService - Turndown service instance
+ * @param {string[]} allMarkdownContent - Array to collect markdown for concatenation
+ */
+export function savePageContent(content, progressDir, turndownService, allMarkdownContent) {
+  const filename = urlToFilename(content.url);
+
+  const data = {
+    url: content.url,
+    title: content.title,
+    heading: content.heading,
+    breadcrumb: content.breadcrumb || [],
+    text: content.text,
+    crawledAt: new Date().toISOString()
+  };
+
+  // Save JSON in progress subdirectory
+  const jsonFilepath = path.join(progressDir, filename);
+  fs.writeFileSync(jsonFilepath, JSON.stringify(data, null, 2));
+
+  // Save HTML in progress subdirectory
+  const htmlFilepath = path.join(progressDir, filename.replace('.json', '.html'));
+  fs.writeFileSync(htmlFilepath, content.html);
+
+  // Convert to Markdown and save in progress subdirectory
+  const markdownDoc = contentToMarkdown(content, turndownService);
+  const mdFilepath = path.join(progressDir, filename.replace('.json', '.md'));
+  fs.writeFileSync(mdFilepath, markdownDoc);
+
+  // Collect for concatenated output
+  allMarkdownContent.push(markdownDoc);
+
+  return filename;
+}
+
 export class SitefinityCrawler {
   /**
    * Create a new Sitefinity documentation crawler
@@ -541,55 +600,8 @@ export class SitefinityCrawler {
    * @returns {void}
    */
   saveContent(content) {
-    const filename = this.urlToFilename(content.url);
-
-    const data = {
-      url: content.url,
-      title: content.title,
-      heading: content.heading,
-      breadcrumb: content.breadcrumb || [],
-      text: content.text,
-      crawledAt: new Date().toISOString()
-    };
-
-    // Save JSON in output root
-    const jsonFilepath = path.join(this.outputDir, filename);
-    fs.writeFileSync(jsonFilepath, JSON.stringify(data, null, 2));
+    const filename = savePageContent(content, this.progressDir, this.turndownService, this.allMarkdownContent);
     console.log(`Saved: ${filename}`);
-
-    // Save HTML in progress subdirectory
-    const htmlFilepath = path.join(this.progressDir, filename.replace('.json', '.html'));
-    fs.writeFileSync(htmlFilepath, content.html);
-
-    // Convert to Markdown and save in progress subdirectory
-    const markdownDoc = contentToMarkdown(content, this.turndownService);
-    const mdFilepath = path.join(this.progressDir, filename.replace('.json', '.md'));
-    fs.writeFileSync(mdFilepath, markdownDoc);
-
-    // Collect for concatenated output
-    this.allMarkdownContent.push(markdownDoc);
-  }
-
-  /**
-   * Convert URL to safe filename
-   * @param {string} url - Page URL
-   * @returns {string} Safe filename
-   */
-  urlToFilename(url) {
-    // Convert URL to safe filename
-    const urlObj = new URL(url);
-    let filename = urlObj.pathname
-      .replace(/^\/documentation\/sitefinity-cms\/?/, '')
-      .replace(/\//g, '_')
-      .replace(/[^a-z0-9_-]/gi, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_|_$/g, '');
-
-    if (!filename || filename === '') {
-      filename = 'index';
-    }
-
-    return `${filename}.json`;
   }
 
   /**
@@ -673,8 +685,8 @@ export class SitefinityCrawler {
     console.log(`  - ${this.outputDir}/`);
     console.log(`    - llms-full.txt (concatenated markdown for LLMs)`);
     console.log(`    - _summary.json (crawl metadata)`);
-    console.log(`    - *.json (page metadata)`);
     console.log(`    - progress/`);
+    console.log(`      - *.json (page metadata)`);
     console.log(`      - *.md (individual markdown files)`);
     console.log(`      - *.html (cleaned HTML files)`);
   }
