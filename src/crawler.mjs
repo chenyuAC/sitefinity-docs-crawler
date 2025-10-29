@@ -16,6 +16,7 @@ import TurndownService from 'turndown';
  * @property {string} text - Extracted text content
  * @property {string} html - Extracted HTML content
  * @property {string} url - Page URL
+ * @property {string[]} [breadcrumb] - Breadcrumb navigation items
  */
 
 /**
@@ -104,12 +105,6 @@ export function createTurndownService() {
 }
 
 /**
- * Extract content from a page using the provided selectors
- * @param {import('playwright').Page} page - Playwright page object
- * @param {string[]} excludeSelectors - Selectors for elements to exclude
- * @returns {Promise<ExtractedContent>}
- */
-/**
  * Extracts breadcrumb navigation from the page
  * @param {import('playwright').Page} page - Playwright page object
  * @returns {Promise<string[]>} Array of breadcrumb items
@@ -118,9 +113,10 @@ export async function extractBreadcrumb(page) {
   return await page.evaluate(() => {
     const breadcrumbNav = document.querySelector('.sf-breadcrumb, nav[aria-label*="breadcrumb"]');
     if (!breadcrumbNav) {
-      return [];
+      return /** @type {string[]} */ ([]);
     }
 
+    /** @type {string[]} */
     const breadcrumbs = [];
     
     // Extract text from links and current page
@@ -135,6 +131,12 @@ export async function extractBreadcrumb(page) {
   });
 }
 
+/**
+ * Extract content from a page using the provided selectors
+ * @param {import('playwright').Page} page - Playwright page object
+ * @param {string[]} [excludeSelectors] - Selectors for elements to exclude
+ * @returns {Promise<ExtractedContent>}
+ */
 export async function extractPageContent(page, excludeSelectors = DEFAULT_SELECTORS.excludeSelectors) {
   // Extract breadcrumb first (before content extraction that may remove it)
   const breadcrumb = await extractBreadcrumb(page);
@@ -183,7 +185,6 @@ export async function extractPageContent(page, excludeSelectors = DEFAULT_SELECT
 
       if (matchesPattern) {
         // Remove the heading and all following siblings until the next heading of same or higher level
-        let current = heading;
         const headingLevel = parseInt(heading.tagName.charAt(1)); // Get the number from H2, H3, etc.
 
         // Collect elements to remove
@@ -277,12 +278,6 @@ export async function extractPageContent(page, excludeSelectors = DEFAULT_SELECT
 }
 
 /**
- * Convert extracted content to markdown document with frontmatter
- * @param {ExtractedContent} content - Extracted page content
- * @param {TurndownService} turndownService - Turndown service instance
- * @returns {string} Markdown document
- */
-/**
  * Normalizes whitespace in markdown content
  * - Trims excessive blank lines (max 2 consecutive newlines)
  * - Trims trailing whitespace from each line
@@ -302,6 +297,12 @@ export function normalizeMarkdownWhitespace(markdown) {
     .trim();
 }
 
+/**
+ * Convert extracted content to markdown document with frontmatter
+ * @param {ExtractedContent} content - Extracted page content
+ * @param {TurndownService} turndownService - Turndown service instance
+ * @returns {string} Markdown document
+ */
 export function contentToMarkdown(content, turndownService) {
   const markdown = turndownService.turndown(content.html);
   
@@ -469,9 +470,9 @@ export class SitefinityCrawler {
           waitUntil: 'domcontentloaded',
           timeout: 60000
         });
-        
+
         // Check if the page loaded successfully (not 404)
-        canonicalExists = response && response.ok();
+        canonicalExists = response ? response.ok() : false;
         await testPage.close();
         
         if (canonicalExists) {
