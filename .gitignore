@@ -1,5 +1,9 @@
 node_modules/
 output/
+test/sampler-output.txt
 *.log
 .DS_Store
 .env
+*.swp
+*.swo
+*~

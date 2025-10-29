@@ -3,16 +3,30 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Playwright-based crawler for Sitefinity CMS documentation",
-  "main": "src/crawler.js",
+  "main": "src/crawler.mjs",
   "scripts": {
-    "crawl": "node src/index.js",
-    "test:sample": "node test/sampler.js"
+    "crawl": "node src/index.mjs",
+    "test": "node --test",
+    "test:sample": "node --test test/sampler.mjs",
+    "test:dedup": "node --test test/version-dedup-test.mjs",
+    "typecheck": "tsc --noEmit"
   },
-  "keywords": ["playwright", "crawler", "sitefinity", "documentation"],
+  "keywords": [
+    "playwright",
+    "crawler",
+    "sitefinity",
+    "documentation"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@playwright/test": "^1.56.1",
-    "playwright": "^1.56.1"
+    "playwright": "^1.56.1",
+    "turndown": "^7.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.2",
+    "@types/turndown": "^5.0.6",
+    "typescript": "^5.9.3"
   }
 }

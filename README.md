@@ -5,11 +5,16 @@ A Playwright-based web crawler for extracting content from the Sitefinity CMS do
 ## Features
 
 - Crawls documentation pages from https://www.progress.com/documentation/sitefinity-cms
+- **Smart version deduplication** - Automatically detects and handles versioned URLs (e.g., `/152/page` vs `/page`)
+- **Breadcrumb extraction** - Captures hierarchical navigation for better organization
+- **Whitespace normalization** - Clean, optimized markdown output
 - Extracts main content while excluding navigation, headers, footers, and sidebars
-- Saves content as both JSON and HTML files
+- Saves content as JSON (metadata), HTML (cleaned), and Markdown files
+- Generates `llms-full.txt` - concatenated markdown optimized for LLM consumption
 - Respects documentation structure and follows internal links
-- Configurable crawl limits and output directories
+- Configurable crawl limits (unlimited by default) and output directories
 - ES modules for modern JavaScript support
+- Comprehensive test suite with Node.js test runner
 
 ## Installation
 
@@ -26,14 +31,22 @@ This will install Playwright and its dependencies. Chromium browser will be down
 To start crawling the Sitefinity documentation:
 
 ```bash
+# Crawl all pages (unlimited)
 npm run crawl
+
+# Crawl up to 100 pages
+npm run crawl -- 100
+
+# Crawl up to 50 pages
+npm run crawl -- 50
 ```
 
-By default, it will:
+By default (no arguments), it will:
 - Start from the main documentation page
-- Crawl up to 50 pages (configurable)
+- Crawl **all pages** (unlimited)
 - Save output to the `./output` directory
-- Save each page as JSON (content + metadata) and HTML (raw content)
+- Save each page as JSON (content + metadata), HTML (cleaned content), and Markdown
+- Generate `llms-full.txt` - a concatenated markdown file optimized for LLM consumption
 
 ### Run the Sampler (Test)
 
@@ -56,9 +69,19 @@ The sampler is useful for:
 - Verifying content extraction quality
 - Testing before running a full crawl
 
+### Type Check
+
+To validate the JavaScript code with TypeScript:
+
+```bash
+npm run typecheck
+```
+
+This will check all `.mjs` files for type errors using TypeScript's type checker. Note: Some type warnings are expected due to DOM API usage in `page.evaluate()` contexts.
+
 ## Configuration
 
-Edit [src/index.js](src/index.js) to customize crawler settings:
+Edit [src/index.mjs](src/index.mjs) to customize crawler settings:
 
 ```javascript
 const crawler = new SitefinityCrawler({
@@ -69,7 +92,7 @@ const crawler = new SitefinityCrawler({
 
 ### Selector Configuration
 
-The crawler uses these selectors (defined in [src/crawler.js:14-36](src/crawler.js#L14-L36)):
+The crawler uses these selectors (defined in [src/crawler.mjs:14-36](src/crawler.mjs#L14-L36)):
 
 **Main Content:**
 - `article`, `.main-content`, `[role="main"]`, `.content-area`
@@ -82,7 +105,15 @@ The crawler uses these selectors (defined in [src/crawler.js:14-36](src/crawler.
 
 ## Output Structure
 
-Each crawled page generates two files:
+```
+output/
+├── llms-full.txt              # Concatenated markdown for LLM consumption
+├── _summary.json              # Crawl statistics and metadata
+├── *.json                     # Individual page metadata files
+└── progress/
+    ├── *.md                   # Individual markdown files
+    └── *.html                 # Cleaned HTML files
+```
 
 ### JSON File (metadata + text)
 ```json
@@ -90,34 +121,55 @@ Each crawled page generates two files:
   "url": "https://www.progress.com/documentation/sitefinity-cms/...",
   "title": "Page Title",
   "heading": "Main Heading",
+  "breadcrumb": ["Home", "Parent", "Current Page"],
   "text": "Extracted text content...",
   "crawledAt": "2025-10-29T..."
 }
 ```
 
-### HTML File (raw content)
+### Markdown File (with frontmatter)
+```markdown
+# Page Title
+
+**URL:** https://www.progress.com/documentation/sitefinity-cms/...
+**Breadcrumb:** Home > Parent > Current Page
+**Crawled:** 2025-10-29T...
+
+---
+
+[cleaned markdown content...]
+```
+
+### HTML File (cleaned content)
 The extracted HTML content after removing excluded elements.
 
 ### Summary File
 `_summary.json` contains crawl statistics:
 ```json
 {
-  "totalPages": 50,
+  "totalPages": 150,
   "crawledAt": "2025-10-29T...",
   "baseUrl": "https://www.progress.com/documentation/sitefinity-cms",
   "pages": ["array of crawled URLs"]
 }
 ```
 
+### LLM-Optimized Output
+`llms-full.txt` contains all pages concatenated in markdown format with:
+- Clean, normalized whitespace
+- Breadcrumb navigation for context
+- Structured frontmatter
+- Document separators
+
 ## Project Structure
 
 ```
 sitefinity-docs-crawler/
 ├── src/
-│   ├── crawler.js      # Main crawler class
-│   └── index.js        # Entry point
+│   ├── crawler.mjs     # Main crawler class
+│   └── index.mjs       # Entry point
 ├── test/
-│   └── sampler.js      # Selector testing tool
+│   └── sampler.mjs     # Selector testing tool
 ├── output/             # Crawled content (generated)
 ├── package.json        # Project configuration (ES modules)
 ├── README.md          # Documentation
@@ -142,7 +194,7 @@ sitefinity-docs-crawler/
 ### Programmatic Usage
 
 ```javascript
-import { SitefinityCrawler } from './src/crawler.js';
+import { SitefinityCrawler } from './src/crawler.mjs';
 
 const crawler = new SitefinityCrawler({
   outputDir: './custom-output',
@@ -154,7 +206,7 @@ await crawler.run();
 
 ### Custom Selectors
 
-Modify the `selectors` object in [src/crawler.js:14-36](src/crawler.js#L14-L36) to adjust content extraction:
+Modify the `selectors` object in [src/crawler.mjs:14-36](src/crawler.mjs#L14-L36) to adjust content extraction:
 
 ```javascript
 this.selectors = {
@@ -167,7 +219,7 @@ this.selectors = {
 ## Troubleshooting
 
 ### Timeout Errors
-If pages are slow to load, increase timeout in [src/crawler.js:122-125](src/crawler.js#L122-L125):
+If pages are slow to load, increase timeout in [src/crawler.mjs:122-125](src/crawler.mjs#L122-L125):
 ```javascript
 await page.goto(url, {
   waitUntil: 'domcontentloaded',
@@ -182,11 +234,11 @@ npm run test:sample
 ```
 
 ### Too Many/Few Pages
-Adjust `maxPages` parameter in [src/index.js](src/index.js).
+Adjust `maxPages` parameter in [src/index.mjs](src/index.mjs).
 
 ### ES Module Issues
-This project uses ES modules (`"type": "module"` in package.json). Make sure:
-- Use `.js` extensions in imports
+This project uses ES modules with `.mjs` extensions (`"type": "module"` in package.json). Make sure:
+- Use `.mjs` extensions in imports
 - Use `import/export` instead of `require/module.exports`
 - Node.js version 14+ is recommended
 
