@@ -720,10 +720,34 @@ export class SitefinityCrawler {
     const page = await this.context.newPage();
 
     try {
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 60000
-      });
+      // Retry logic with progressive timeout
+      const maxRetries = 3;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        const timeout = 10000 * attempt; // 10s, 20s, 30s
+
+        try {
+          if (attempt > 1) {
+            console.log(`Re-attempt ${attempt}/${maxRetries} (timeout: ${timeout / 1000}s)`);
+          }
+          await page.goto(url, {
+            waitUntil: 'domcontentloaded',
+            timeout: timeout
+          });
+
+          // Success - break out of retry loop
+          break;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+
+          if (attempt < maxRetries) {
+            console.log(`Attempt ${attempt} failed: ${errorMessage}`);
+          } else {
+            // Final attempt failed
+            throw error;
+          }
+        }
+      }
 
       // Extract content
       const content = await this.extractContent(page, url);
