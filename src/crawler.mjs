@@ -728,7 +728,9 @@ export class SitefinityCrawler {
     this.visitedCanonical.add(canonicalUrl);
     this.pageCount++;
 
-    console.log(`\n[${this.pageCount}/${this.maxPages}] Crawling: ${url}`);
+    const totalPages = this.cachedCount + this.pageCount;
+    const maxTotal = this.maxPages === Infinity ? 'unlimited' : this.maxPages;
+    console.log(`\n[${totalPages} total: ${this.cachedCount} cached + ${this.pageCount} new] [fetching ${this.pageCount}/${maxTotal}] ${url}`);
 
     if (!this.context) {
       throw new Error('Browser context not initialized');
