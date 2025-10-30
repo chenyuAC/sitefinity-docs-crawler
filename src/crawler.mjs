@@ -7,6 +7,7 @@ import TurndownService from 'turndown';
  * @typedef {Object} CrawlerOptions
  * @property {string} [outputDir] - Directory to save crawled content
  * @property {number} [maxPages] - Maximum number of pages to crawl
+ * @property {number} [staleThreshold] - Time in seconds before cached data is considered stale (default: 86400 = 1 day, 0 = always re-download)
  */
 
 /**
@@ -17,6 +18,14 @@ import TurndownService from 'turndown';
  * @property {string} html - Extracted HTML content
  * @property {string} url - Page URL
  * @property {string[]} [breadcrumb] - Breadcrumb navigation items
+ */
+
+/**
+ * @typedef {Object} CachedPageData
+ * @property {Object} json - JSON metadata
+ * @property {string} html - Cached HTML content
+ * @property {string} md - Cached Markdown content
+ * @property {string} crawledAt - ISO timestamp when page was crawled
  */
 
 /**
@@ -407,8 +416,12 @@ export class SitefinityCrawler {
     this.visitedCanonical = new Set();
     /** @type {number} */
     this.maxPages = options.maxPages !== undefined ? options.maxPages : 100;
+    /** @type {number} - Stale threshold in seconds (default: 86400 = 1 day) */
+    this.staleThreshold = options.staleThreshold !== undefined ? options.staleThreshold : 86400;
     /** @type {number} */
     this.pageCount = 0;
+    /** @type {number} */
+    this.cachedCount = 0;
     /** @type {import('playwright').Browser | undefined} */
     this.browser = undefined;
     /** @type {import('playwright').BrowserContext | undefined} */
@@ -417,9 +430,129 @@ export class SitefinityCrawler {
     this.turndownService = createTurndownService();
     /** @type {string[]} */
     this.allMarkdownContent = [];
+    /** @type {Map<string, CachedPageData>} - Cache of fresh page data indexed by URL */
+    this.cachedPages = new Map();
 
     // Selectors for content extraction
     this.selectors = DEFAULT_SELECTORS;
+  }
+
+  /**
+   * Load existing progress files and check for fresh cached data
+   * @returns {Promise<void>}
+   */
+  async loadCachedProgress() {
+    if (!fs.existsSync(this.progressDir)) {
+      console.log('No existing progress directory found, starting fresh crawl');
+      return;
+    }
+
+    console.log('Checking for cached progress files...');
+    const files = fs.readdirSync(this.progressDir).filter(f => f.endsWith('.json'));
+
+    if (files.length === 0) {
+      console.log('No cached progress files found, starting fresh crawl');
+      return;
+    }
+
+    const now = Date.now();
+    const staleThresholdMs = this.staleThreshold * 1000;
+    let freshCount = 0;
+    let staleCount = 0;
+
+    // If staleThreshold is 0, skip all cached data
+    if (this.staleThreshold === 0) {
+      console.log(`Stale threshold is 0, re-downloading all ${files.length} pages`);
+      return;
+    }
+
+    for (const file of files) {
+      try {
+        const jsonPath = path.join(this.progressDir, file);
+        const htmlPath = jsonPath.replace('.json', '.html');
+        const mdPath = jsonPath.replace('.json', '.md');
+
+        // Check if all required files exist
+        if (!fs.existsSync(htmlPath) || !fs.existsSync(mdPath)) {
+          staleCount++;
+          continue;
+        }
+
+        const jsonData = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+        const htmlContent = fs.readFileSync(htmlPath, 'utf-8');
+        const mdContent = fs.readFileSync(mdPath, 'utf-8');
+
+        // Check if data is fresh
+        const crawledAt = new Date(jsonData.crawledAt).getTime();
+        const age = now - crawledAt;
+        const isFresh = age < staleThresholdMs;
+
+        if (isFresh) {
+          // Store cached data
+          this.cachedPages.set(jsonData.url, {
+            json: jsonData,
+            html: htmlContent,
+            md: mdContent,
+            crawledAt: jsonData.crawledAt
+          });
+
+          // Mark as visited
+          this.visited.add(jsonData.url);
+          const canonical = this.getCanonicalUrl(jsonData.url);
+          this.visitedCanonical.add(canonical);
+
+          // Add to markdown collection
+          this.allMarkdownContent.push(mdContent);
+
+          freshCount++;
+        } else {
+          staleCount++;
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Error loading cached file ${file}:`, errorMessage);
+        staleCount++;
+      }
+    }
+
+    console.log(`Loaded ${freshCount} fresh cached pages (threshold: ${this.staleThreshold}s)`);
+    console.log(`Found ${staleCount} stale/missing pages to re-crawl`);
+    this.cachedCount = freshCount;
+  }
+
+  /**
+   * Extract links from cached HTML without making a network request
+   * @param {string} htmlContent - Cached HTML content
+   * @param {string} baseUrl - Base URL for resolving relative links
+   * @returns {string[]} - Array of documentation links
+   */
+  extractLinksFromHtml(htmlContent, baseUrl) {
+    // Use cheerio-like approach with regex for simple link extraction
+    const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>/gi;
+    const urls = new Set();
+    let match;
+
+    while ((match = linkRegex.exec(htmlContent)) !== null) {
+      const href = match[1];
+
+      // Check if it's a documentation link
+      if (href && href.includes('/documentation/sitefinity-cms')) {
+        try {
+          // Handle both absolute and relative URLs
+          const fullUrl = href.startsWith('http') ? href : new URL(href, baseUrl).href;
+          // Clean up URL (remove hash, query params)
+          const cleanUrl = fullUrl.split('#')[0].split('?')[0];
+
+          if (cleanUrl.startsWith(this.baseUrl)) {
+            urls.add(cleanUrl);
+          }
+        } catch (error) {
+          // Skip invalid URLs
+        }
+      }
+    }
+
+    return Array.from(urls);
   }
 
   /**
@@ -434,6 +567,9 @@ export class SitefinityCrawler {
     if (!fs.existsSync(this.progressDir)) {
       fs.mkdirSync(this.progressDir, { recursive: true });
     }
+
+    // Load cached progress
+    await this.loadCachedProgress();
 
     // Launch browser
     this.browser = await chromium.launch({
@@ -505,7 +641,7 @@ export class SitefinityCrawler {
     // Check if we've already crawled this page's canonical version
     const canonicalUrl = this.getCanonicalUrl(url);
     const hasVersion = this.extractVersion(url);
-    
+
     if (hasVersion && this.visitedCanonical.has(canonicalUrl)) {
       console.log(`Skipping versioned URL (already crawled canonical): ${url}`);
       return;
@@ -515,15 +651,15 @@ export class SitefinityCrawler {
     if (hasVersion && !this.visitedCanonical.has(canonicalUrl)) {
       console.log(`Found versioned URL: ${url} (version ${hasVersion})`);
       console.log(`Attempting to crawl canonical (latest) version first: ${canonicalUrl}`);
-      
+
       // Try to crawl the canonical URL first
       if (!this.context) {
         throw new Error('Browser context not initialized');
       }
-      
+
       const testPage = await this.context.newPage();
       let canonicalExists = false;
-      
+
       try {
         const response = await testPage.goto(canonicalUrl, {
           waitUntil: 'domcontentloaded',
@@ -533,7 +669,7 @@ export class SitefinityCrawler {
         // Check if the page loaded successfully (not 404)
         canonicalExists = response ? response.ok() : false;
         await testPage.close();
-        
+
         if (canonicalExists) {
           console.log(`Canonical version exists, crawling: ${canonicalUrl}`);
           // Recursively crawl the canonical version
@@ -548,6 +684,28 @@ export class SitefinityCrawler {
       }
     }
 
+    // Check if we have fresh cached data for this URL
+    const cachedData = this.cachedPages.get(url);
+    if (cachedData) {
+      console.log(`\n[Cached] Using fresh data: ${url}`);
+      console.log(`Cached at: ${cachedData.crawledAt}`);
+
+      // Extract links from cached HTML to continue crawling
+      const links = this.extractLinksFromHtml(cachedData.html, url);
+      console.log(`Found ${links.length} documentation links from cached HTML`);
+
+      // Recursively crawl found links
+      for (const link of links) {
+        if (this.pageCount >= this.maxPages) {
+          break;
+        }
+        await this.crawlPage(link);
+      }
+
+      return;
+    }
+
+    // No cached data or data is stale, fetch from network
     // Mark both the actual URL and canonical URL as visited
     this.visited.add(url);
     this.visitedCanonical.add(canonicalUrl);
@@ -652,6 +810,8 @@ export class SitefinityCrawler {
     // Generate summary
     const summary = {
       totalPages: this.pageCount,
+      cachedPages: this.cachedCount,
+      newlyFetchedPages: this.pageCount,
       crawledAt: new Date().toISOString(),
       baseUrl: this.baseUrl,
       pages: Array.from(this.visited)
@@ -663,11 +823,14 @@ export class SitefinityCrawler {
     );
 
     // Save concatenated markdown file as llms-full.txt
+    const totalPages = this.pageCount + this.cachedCount;
     const markdownOutput = [
       '# Sitefinity CMS Documentation',
       '',
       `**Generated:** ${new Date().toISOString()}`,
-      `**Total Pages:** ${this.pageCount}`,
+      `**Total Pages:** ${totalPages}`,
+      `**Cached Pages:** ${this.cachedCount}`,
+      `**Newly Fetched Pages:** ${this.pageCount}`,
       '',
       '---',
       '',
@@ -680,7 +843,7 @@ export class SitefinityCrawler {
     );
 
     console.log(`\n✓ Crawling completed!`);
-    console.log(`✓ Total pages crawled: ${this.pageCount}`);
+    console.log(`✓ Total pages: ${totalPages} (${this.cachedCount} cached, ${this.pageCount} newly fetched)`);
     console.log(`✓ Output structure:`);
     console.log(`  - ${this.outputDir}/`);
     console.log(`    - llms-full.txt (concatenated markdown for LLMs)`);

@@ -1,20 +1,18 @@
 # Sitefinity Documentation Crawler
 
-A Playwright-based web crawler for extracting content from the Sitefinity CMS documentation website. Built with ES modules and organized following best practices.
+Playwright-based web crawler for Sitefinity CMS documentation with smart caching and resume capabilities.
 
 ## Features
 
-- Crawls documentation pages from https://www.progress.com/documentation/sitefinity-cms
-- **Smart version deduplication** - Automatically detects and handles versioned URLs (e.g., `/152/page` vs `/page`)
-- **Breadcrumb extraction** - Captures hierarchical navigation for better organization
-- **Whitespace normalization** - Clean, optimized markdown output
-- Extracts main content while excluding navigation, headers, footers, and sidebars
-- Saves content as JSON (metadata), HTML (cleaned), and Markdown files
-- Generates `llms-full.txt` - concatenated markdown optimized for LLM consumption
-- Respects documentation structure and follows internal links
-- Configurable crawl limits (unlimited by default) and output directories
-- ES modules for modern JavaScript support
-- Comprehensive test suite with Node.js test runner
+- **Smart Resume** - Caches crawled data, reuses fresh pages (configurable threshold), extracts links from cached HTML to continue crawling
+- **Version Deduplication** - Automatically handles versioned URLs (`/152/page`), crawls canonical (latest) version only
+- **Breadcrumb Extraction** - Captures hierarchical navigation context
+- **Whitespace Normalization** - Clean, optimized markdown output
+- Extracts main content while excluding navigation/UI elements
+- Saves as JSON (metadata), HTML (cleaned), and Markdown files
+- Generates `llms-full.txt` - concatenated markdown for LLM consumption
+- Configurable crawl limits (unlimited by default) and cache duration
+- ES modules, JSDoc type safety, Node.js test suite
 
 ## Installation
 
@@ -28,25 +26,30 @@ This will install Playwright and its dependencies. Chromium browser will be down
 
 ### Run the Crawler
 
-To start crawling the Sitefinity documentation:
-
 ```bash
-# Crawl all pages (unlimited)
+# Resume with 1-day cache (default)
 npm run crawl
 
-# Crawl up to 100 pages
+# Crawl 100 pages max with 1-day cache
 npm run crawl -- 100
 
-# Crawl up to 50 pages
-npm run crawl -- 50
+# Crawl with 1-hour cache (3600 seconds)
+npm run crawl -- 100 3600
+
+# Force re-download everything (no cache)
+npm run crawl -- Infinity 0
 ```
 
-By default (no arguments), it will:
-- Start from the main documentation page
-- Crawl **all pages** (unlimited)
-- Save output to the `./output` directory
-- Save each page as JSON (content + metadata), HTML (cleaned content), and Markdown
-- Generate `llms-full.txt` - a concatenated markdown file optimized for LLM consumption
+**Arguments:**
+- `maxPages`: Number of pages to crawl (default: `Infinity`)
+- `staleThreshold`: Seconds before cache is stale (default: `86400` = 1 day, `0` = no cache)
+
+**Behavior:**
+- Loads cached progress from `./output/progress/`
+- Reuses fresh cached pages (based on `crawledAt` timestamp)
+- Extracts links from cached HTML to discover new pages
+- Re-downloads stale or missing pages
+- Saves output to `./output/` directory
 
 ### Run Tests
 
@@ -86,24 +89,23 @@ This will check all `.mjs` files for type errors using TypeScript's type checker
 
 ## Configuration
 
-### Command-Line Configuration
-
-Pass `maxPages` as a command-line argument:
+### CLI Arguments
 
 ```bash
-npm run crawl          # Unlimited pages (default)
-npm run crawl -- 100   # Limit to 100 pages
-npm run crawl -- 50    # Limit to 50 pages
+npm run crawl -- <maxPages> <staleThreshold>
 ```
+- `maxPages`: Number of pages (default: `Infinity`)
+- `staleThreshold`: Cache lifetime in seconds (default: `86400` = 1 day, `0` = no cache)
 
 ### Code Configuration
 
-Edit [src/index.mjs](src/index.mjs) to customize crawler settings:
+Edit [src/index.mjs](src/index.mjs):
 
 ```javascript
 const crawler = new SitefinityCrawler({
-  outputDir: './output',  // Where to save files
-  maxPages: Infinity      // Maximum pages to crawl (can be overridden by CLI arg)
+  outputDir: './output',
+  maxPages: Infinity,
+  staleThreshold: 86400  // 1 day
 });
 ```
 
@@ -165,6 +167,8 @@ The extracted HTML content after removing excluded elements.
 ```json
 {
   "totalPages": 150,
+  "cachedPages": 120,
+  "newlyFetchedPages": 30,
   "crawledAt": "2025-10-29T...",
   "baseUrl": "https://www.progress.com/documentation/sitefinity-cms",
   "pages": ["array of crawled URLs"]
@@ -172,8 +176,7 @@ The extracted HTML content after removing excluded elements.
 ```
 
 ### LLM-Optimized Output
-`llms-full.txt` contains all pages concatenated in markdown format with:
-- Clean, normalized whitespace
+`llms-full.txt` contains all pages concatenated with cache statistics and clean, normalized whitespace
 - Breadcrumb navigation for context
 - Structured frontmatter
 - Document separators
@@ -203,26 +206,20 @@ sitefinity-docs-crawler/
 
 ## How It Works
 
-1. **Initialization**: Launches Chromium browser with Playwright
-2. **Navigation**: Starts from the base documentation URL
-3. **Version Deduplication** (for each discovered URL):
-   - Detects if URL contains a version number (e.g., `/152/page`)
-   - If versioned, attempts to fetch canonical (non-versioned) URL first
-   - Crawls canonical if it exists, otherwise crawls the versioned URL as exception
-   - Marks both canonical and versioned URLs as visited to prevent duplicates
-4. **Content Extraction**:
-   - Extracts breadcrumb navigation before processing
-   - Waits for page to load
-   - Removes excluded elements (nav, footer, etc.)
-   - Extracts main content area
-   - Normalizes whitespace in markdown output
-5. **File Saving** (in `progress/` directory):
-   - **JSON**: Structured metadata with breadcrumb array
-   - **HTML**: Cleaned HTML content
-   - **Markdown**: Frontmatter + normalized content
-6. **Link Discovery**: Finds all internal documentation links
-7. **Recursive Crawling**: Follows discovered links until max pages reached
-8. **Cleanup**: Generates summary and `llms-full.txt` concatenated file, closes browser
+1. **Load Cache**: Scans `output/progress/`, loads fresh cached pages (based on `crawledAt` vs `staleThreshold`)
+2. **Initialize**: Launches Chromium browser, marks cached URLs as visited
+3. **For Each URL**:
+   - **If cached (fresh)**: Load from disk, extract links from HTML, skip network request
+   - **If uncached/stale**: Fetch from network, extract content, save files
+   - **Version dedup**: Prefer canonical URL over versioned URL
+4. **Content Extraction** (for uncached pages):
+   - Extract breadcrumb navigation
+   - Remove excluded elements (nav, footer, etc.)
+   - Extract main content, normalize whitespace
+5. **File Saving**: JSON (metadata), HTML (cleaned), Markdown (with frontmatter) in `progress/`
+6. **Link Discovery**: Extract documentation links (from live page or cached HTML)
+7. **Recursive Crawl**: Follow discovered links until max pages or no more links
+8. **Cleanup**: Generate summary with cache stats and `llms-full.txt`, close browser
 
 ## Advanced Usage
 

@@ -1,18 +1,19 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+AI assistant guidance for this Sitefinity CMS documentation crawler.
 
 ## Project Overview
 
-This is a Playwright-based web crawler for extracting content from the Sitefinity CMS documentation website (https://www.progress.com/documentation/sitefinity-cms). The crawler recursively follows documentation links, extracts main content while filtering out navigation/UI elements, and saves the results as JSON (structured metadata + text), HTML, and Markdown files. It also generates a concatenated output (`llms-full.txt`) optimized for LLM consumption.
+Playwright-based web crawler that extracts Sitefinity CMS documentation, saves as JSON/HTML/Markdown, and generates `llms-full.txt` for LLM consumption.
 
 ### Key Features
 
-- **Smart Version Deduplication** - Automatically detects versioned URLs (e.g., `/152/page` vs `/133/page`) and crawls only the canonical (latest) version
-- **Breadcrumb Extraction** - Captures hierarchical navigation context for better organization
-- **Whitespace Normalization** - Produces clean, optimized markdown with consistent formatting
-- **Unlimited Crawling** - Configurable page limits (default: unlimited) via command-line arguments
-- **Comprehensive Testing** - Full test suite with Node.js test runner
+- **Smart Resume** - Caches crawled data, reuses fresh pages (default: 1 day), continues crawling from cached HTML links
+- **Version Deduplication** - Detects versioned URLs (`/152/page`), crawls only canonical (latest) version
+- **Breadcrumb Extraction** - Captures hierarchical navigation context
+- **Whitespace Normalization** - Clean, optimized markdown output
+- **Unlimited Crawling** - Configurable via CLI (default: unlimited)
+- **Full Test Suite** - Node.js test runner with type checking
 
 ## ES Modules
 
@@ -25,16 +26,19 @@ This project uses ES modules (`"type": "module"` in package.json):
 
 ### Run the crawler
 ```bash
-# Crawl all pages (unlimited)
+# Crawl all pages with 1-day cache (resumes from previous crawl)
 npm run crawl
 
-# Crawl up to 100 pages
+# Crawl 100 pages max with 1-day cache
 npm run crawl -- 100
 
-# Crawl up to 50 pages
-npm run crawl -- 50
+# Crawl 100 pages with 1-hour cache
+npm run crawl -- 100 3600
+
+# Force re-download everything (no cache)
+npm run crawl -- Infinity 0
 ```
-Executes `src/index.mjs` which accepts an optional numeric argument for `maxPages` (default: Infinity).
+Arguments: `maxPages` (default: Infinity), `staleThreshold` in seconds (default: 86400 = 1 day, 0 = no cache)
 
 ### Run tests
 ```bash
@@ -73,25 +77,19 @@ Tests include:
 - `savePageContent(content, progressDir, turndownService, allMarkdownContent)` - Saves JSON, HTML, and MD files
 - `DEFAULT_SELECTORS` - Default selectors for content extraction
 
-**`SitefinityCrawler` class** methods:
-- `initialize()` - Creates output directory and launches headless Chromium
-- `crawlPage(url)` - Recursive crawler with smart version deduplication
-  - Detects versioned URLs (e.g., `/152/page`)
-  - Attempts to crawl canonical (versionless) URL first
-  - Falls back to versioned URL if canonical doesn't exist
-  - Marks both versioned and canonical URLs as visited to prevent duplicates
-- `extractContent(page, url)` - Wrapper that calls `extractPageContent()`
-- `extractLinks(page)` - Finds documentation links to crawl
-- `saveContent(content)` - Uses shared `savePageContent()` function
-- `close()` - Closes browser and generates summary plus concatenated file (`llms-full.txt`)
-- `run()` - Main entry point that orchestrates the crawl
-- `extractVersion(url)` - Extracts version number from URL (e.g., "152")
-- `normalizeUrl(url)` - Removes version slug from URL
-- `getCanonicalUrl(url)` - Returns canonical (non-versioned) URL
+**`SitefinityCrawler` class** key methods:
+- `loadCachedProgress()` - Loads cached progress files, checks `crawledAt` timestamp against `staleThreshold`, marks fresh pages as visited
+- `extractLinksFromHtml(html, baseUrl)` - Extracts documentation links from cached HTML (no network request)
+- `crawlPage(url)` - Recursive crawler with smart caching and version deduplication:
+  - Checks for fresh cached data, reuses if available
+  - Extracts links from cached HTML to continue crawling
+  - For stale/uncached pages: fetches from network
+  - For versioned URLs: attempts canonical first, falls back to versioned
+- `close()` - Generates summary with cache stats (`cachedPages`, `newlyFetchedPages`) and concatenated `llms-full.txt`
 
 **`src/index.mjs`** - Entry point
-- Accepts command-line arguments for `maxPages`
-- Default: unlimited pages (`Infinity`), `./output` directory
+- CLI args: `maxPages` (default: Infinity), `staleThreshold` in seconds (default: 86400)
+- Creates `SitefinityCrawler` with options, runs crawl
 
 **`test/sampler.mjs`** - Selector testing tool
 - **Uses shared `savePageContent()` function** - ensures sampler generates identical output to main crawler
@@ -118,26 +116,14 @@ The crawler's effectiveness depends on its CSS selectors (defined in `DEFAULT_SE
 
 ### Crawling Flow
 
-1. Start at base URL (Sitefinity CMS documentation home)
-2. For each page:
-   - **Check for version deduplication**:
-     - If URL has version (e.g., `/152/page`), check if canonical already visited
-     - Try to fetch canonical URL (without version)
-     - If canonical exists, crawl it and skip versioned URL
-     - If canonical doesn't exist, crawl versioned URL as exception
-   - Wait for network idle (30s timeout with fallback)
-   - **Extract breadcrumb** before content extraction (prevents removal)
-   - Use `extractPageContent()` to remove excluded elements and extract clean content
-   - Use `contentToMarkdown()` to convert HTML to markdown with breadcrumbs
-   - Save to `progress/` directory:
-     - `{sanitized-url}.json` (metadata with breadcrumb array)
-     - `{sanitized-url}.html` (cleaned HTML)
-     - `{sanitized-url}.md` (markdown with frontmatter)
-   - Collect markdown content for concatenation
-   - Extract all documentation links
-   - Recursively crawl discovered links (breadth-first)
-3. Stop when `maxPages` reached or no more links
-4. Generate `_summary.json` and `llms-full.txt` (markdown format)
+1. **Initialization**: Load cached progress files, check `crawledAt` timestamp, mark fresh pages as visited
+2. **For each page**:
+   - **Cached (fresh)**: Load from disk, extract links from HTML, continue crawling
+   - **Uncached/stale**: Fetch from network, extract content, save files, extract links
+   - **Version dedup**: If versioned URL, try canonical first, fallback to versioned
+   - Save to `progress/`: `{url}.json`, `{url}.html`, `{url}.md` (with breadcrumbs)
+3. **Stop**: When `maxPages` reached or no more links
+4. **Close**: Generate `_summary.json` (with cache stats) and `llms-full.txt`
 
 ### Output Structure
 
@@ -163,84 +149,43 @@ Each page creates three files in `progress/`:
   - Normalized markdown content
 
 Plus root-level files:
-- **`_summary.json`**: `{ totalPages, crawledAt, baseUrl, pages[] }`
-- **`llms-full.txt`**: All markdown documents concatenated (markdown format, not plain text)
+- **`_summary.json`**: `{ totalPages, cachedPages, newlyFetchedPages, crawledAt, baseUrl, pages[] }`
+- **`llms-full.txt`**: All markdown documents concatenated with cache statistics
 
-## Configuration Points
+## Configuration
 
-### Command-line Configuration
-
-Pass `maxPages` as argument:
+### CLI Arguments
 ```bash
-node src/index.mjs 100  # Crawl up to 100 pages
-node src/index.mjs      # Crawl all pages (unlimited)
+node src/index.mjs <maxPages> <staleThreshold>
+# maxPages: Infinity (default) or number
+# staleThreshold: 86400 (1 day, default), 0 (no cache), 604800 (1 week)
 ```
 
-### Code Configuration
-
-To modify crawler behavior, edit `src/index.mjs`:
+### Code Options
 ```javascript
-const crawler = new SitefinityCrawler({
-  outputDir: './output',  // Change output location
-  maxPages: Infinity      // Change crawl limit (or pass via CLI)
+new SitefinityCrawler({
+  outputDir: './output',
+  maxPages: Infinity,
+  staleThreshold: 86400  // seconds
 });
 ```
 
-To adjust content extraction, edit `DEFAULT_SELECTORS` in `src/crawler.mjs` (around lines 23-92).
-
-To customize Markdown conversion, modify the Turndown options in the `createTurndownService()` function in `src/crawler.mjs` (around lines 98-103).
-
-To change timeouts, modify:
-- Browser launch timeout: `src/crawler.mjs` (60s in initialize)
-- Network idle timeout: `src/crawler.mjs` (30s in extractPageContent)
-- Page goto timeout: `src/crawler.mjs` (60s in crawlPage)
+### Advanced Configuration
+- **Selectors**: Edit `DEFAULT_SELECTORS` in [src/crawler.mjs](src/crawler.mjs#L25-L94)
+- **Markdown**: Modify `createTurndownService()` in [src/crawler.mjs](src/crawler.mjs#L100-L105)
+- **Timeouts**: Browser (60s), network idle (30s), page goto (60s) in [src/crawler.mjs](src/crawler.mjs)
 
 ## Troubleshooting
 
-**Selector issues**: Always run `npm run test:sample` first to verify selectors work on the live site before making changes. The sampler uses the exact same extraction code as the main crawler.
+- **Stale cache**: If seeing outdated content, reduce `staleThreshold` or set to 0 to force re-download
+- **Selectors**: Run `npm run test:sample` to verify extraction before making changes
+- **Missing content**: Adjust `DEFAULT_SELECTORS.mainContent` or `.excludeSelectors`
+- **Version dedup**: Check console logs for "Skipping versioned URL" or "Canonical version exists"
+- **Type errors**: Run `npm run typecheck` to validate JSDoc annotations
+- **Resume issues**: Delete `output/progress/` to force fresh crawl
 
-**Timeout errors**: Increase timeouts in the three locations mentioned above. The network idle timeout can be safely ignored (has try/catch).
+## Code Design
 
-**Missing/wrong content**: The sampler tool shows exactly what will be extracted. If content is missing, adjust `DEFAULT_SELECTORS.mainContent`. If unwanted content appears, add to `DEFAULT_SELECTORS.excludeSelectors`.
+**DRY Principle**: Shared utility functions exported from `src/crawler.mjs` are reused by both main crawler and test sampler. Changes to extraction logic apply everywhere automatically.
 
-**Version deduplication**: Check console logs for messages like "Skipping versioned URL (already crawled canonical)" or "Canonical version exists, crawling...". Run `npm run test:dedup` to verify the version detection logic.
-
-**Type errors**: Run `npm run typecheck` to validate JSDoc type annotations. All functions should have proper type documentation.
-
-## Code Reusability (DRY Principle)
-
-The crawler is designed with modular, reusable functions following the DRY principle:
-
-**Shared utility functions** (exported from `src/crawler.mjs`):
-- `extractBreadcrumb()` - Breadcrumb extraction
-- `extractPageContent()` - Content extraction with exclusions
-- `contentToMarkdown()` - HTML to Markdown conversion with frontmatter
-- `normalizeMarkdownWhitespace()` - Whitespace cleanup
-- `createTurndownService()` - Turndown service configuration
-- `urlToFilename()` - URL to filename conversion
-- `savePageContent()` - Unified file saving (JSON, HTML, MD)
-- `DEFAULT_SELECTORS` - Shared selector configuration
-
-**Code reuse pattern**: The sampler (`test/sampler.mjs`) imports and uses the exact same functions as the main crawler, ensuring identical behavior and eliminating code duplication. Any changes to extraction logic automatically apply to both the crawler and the sampler.
-
-## Type Safety
-
-This project uses JSDoc annotations for TypeScript type checking without requiring compilation:
-
-- Run `npm run typecheck` to validate types
-- All exported functions have complete JSDoc annotations
-- Custom types defined: `CrawlerOptions`, `ExtractedContent`
-- Playwright types imported for page objects
-
-Example JSDoc pattern:
-```javascript
-/**
- * Extract content from a page using the provided selectors
- * @param {import('playwright').Page} page - Playwright page object
- * @param {string[]} [excludeSelectors] - Selectors for elements to exclude
- * @returns {Promise<ExtractedContent>}
- */
-export async function extractPageContent(page, excludeSelectors = DEFAULT_SELECTORS.excludeSelectors) {
-  // ...
-}
-```
+**Type Safety**: JSDoc annotations provide TypeScript checking without compilation. Run `npm run typecheck` to validate. Custom types: `CrawlerOptions`, `ExtractedContent`, `CachedPageData`.
