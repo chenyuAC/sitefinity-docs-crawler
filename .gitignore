@@ -1,5 +1,6 @@
 node_modules/
-output/
+output/*
+!output/llms-full.txt
 test/sampler-output.txt
 *.log
 .DS_Store
