@@ -468,6 +468,9 @@ export class SitefinityCrawler {
       return urlsToCrawl;
     }
 
+    // First pass: load all cached pages and build a set of fresh filenames
+    const freshFilenames = new Set();
+
     for (const file of files) {
       try {
         const jsonPath = path.join(this.progressDir, file);
@@ -506,9 +509,8 @@ export class SitefinityCrawler {
           // Add to markdown collection
           this.allMarkdownContent.push(mdContent);
 
-          // Extract links from cached HTML to find new pages to crawl
-          const links = this.extractLinksFromHtml(htmlContent, jsonData.url);
-          links.forEach(link => urlsToCrawl.add(link));
+          // Track fresh filenames (without extension)
+          freshFilenames.add(file);
 
           freshCount++;
         } else {
@@ -521,9 +523,27 @@ export class SitefinityCrawler {
       }
     }
 
+    // Second pass: extract links from cached HTML and deduplicate
+    let extractedCount = 0;
+    for (const [url, cachedData] of this.cachedPages) {
+      const links = this.extractLinksFromHtml(cachedData.html, url);
+
+      for (const link of links) {
+        extractedCount++;
+
+        // Convert link to filename to check if we already have it cached
+        const linkFilename = urlToFilename(link);
+
+        if (!freshFilenames.has(linkFilename)) {
+          // This URL is not in our fresh cache - add it to crawl queue
+          urlsToCrawl.add(link);
+        }
+      }
+    }
+
     console.log(`Loaded ${freshCount} fresh cached pages (threshold: ${this.staleThreshold}s)`);
     console.log(`Found ${staleCount} stale/missing pages to re-crawl`);
-    console.log(`Extracted ${urlsToCrawl.size} URLs from cached HTML to check`);
+    console.log(`Extracted ${extractedCount} URLs from cached HTML, ${urlsToCrawl.size} are new/uncached`);
     this.cachedCount = freshCount;
 
     return urlsToCrawl;
