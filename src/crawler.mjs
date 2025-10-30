@@ -439,12 +439,14 @@ export class SitefinityCrawler {
 
   /**
    * Load existing progress files and check for fresh cached data
-   * @returns {Promise<void>}
+   * @returns {Promise<Set<string>>} Set of URLs to crawl from cached pages
    */
   async loadCachedProgress() {
+    const urlsToCrawl = new Set();
+
     if (!fs.existsSync(this.progressDir)) {
       console.log('No existing progress directory found, starting fresh crawl');
-      return;
+      return urlsToCrawl;
     }
 
     console.log('Checking for cached progress files...');
@@ -452,7 +454,7 @@ export class SitefinityCrawler {
 
     if (files.length === 0) {
       console.log('No cached progress files found, starting fresh crawl');
-      return;
+      return urlsToCrawl;
     }
 
     const now = Date.now();
@@ -463,7 +465,7 @@ export class SitefinityCrawler {
     // If staleThreshold is 0, skip all cached data
     if (this.staleThreshold === 0) {
       console.log(`Stale threshold is 0, re-downloading all ${files.length} pages`);
-      return;
+      return urlsToCrawl;
     }
 
     for (const file of files) {
@@ -504,6 +506,10 @@ export class SitefinityCrawler {
           // Add to markdown collection
           this.allMarkdownContent.push(mdContent);
 
+          // Extract links from cached HTML to find new pages to crawl
+          const links = this.extractLinksFromHtml(htmlContent, jsonData.url);
+          links.forEach(link => urlsToCrawl.add(link));
+
           freshCount++;
         } else {
           staleCount++;
@@ -517,7 +523,10 @@ export class SitefinityCrawler {
 
     console.log(`Loaded ${freshCount} fresh cached pages (threshold: ${this.staleThreshold}s)`);
     console.log(`Found ${staleCount} stale/missing pages to re-crawl`);
+    console.log(`Extracted ${urlsToCrawl.size} URLs from cached HTML to check`);
     this.cachedCount = freshCount;
+
+    return urlsToCrawl;
   }
 
   /**
@@ -557,7 +566,7 @@ export class SitefinityCrawler {
 
   /**
    * Initialize the crawler by creating output directory and launching browser
-   * @returns {Promise<void>}
+   * @returns {Promise<Set<string>>} URLs to crawl from cached pages
    */
   async initialize() {
     // Create output directories
@@ -568,8 +577,8 @@ export class SitefinityCrawler {
       fs.mkdirSync(this.progressDir, { recursive: true });
     }
 
-    // Load cached progress
-    await this.loadCachedProgress();
+    // Load cached progress and get URLs to crawl
+    const urlsToCrawl = await this.loadCachedProgress();
 
     // Launch browser
     this.browser = await chromium.launch({
@@ -580,6 +589,8 @@ export class SitefinityCrawler {
       viewport: { width: 1920, height: 1080 },
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
     });
+
+    return urlsToCrawl;
   }
 
   /**
@@ -687,21 +698,7 @@ export class SitefinityCrawler {
     // Check if we have fresh cached data for this URL
     const cachedData = this.cachedPages.get(url);
     if (cachedData) {
-      console.log(`\n[Cached] Using fresh data: ${url}`);
-      console.log(`Cached at: ${cachedData.crawledAt}`);
-
-      // Extract links from cached HTML to continue crawling
-      const links = this.extractLinksFromHtml(cachedData.html, url);
-      console.log(`Found ${links.length} documentation links from cached HTML`);
-
-      // Recursively crawl found links
-      for (const link of links) {
-        if (this.pageCount >= this.maxPages) {
-          break;
-        }
-        await this.crawlPage(link);
-      }
-
+      // We already loaded this page from cache - skip it
       return;
     }
 
@@ -884,8 +881,22 @@ export class SitefinityCrawler {
    */
   async run() {
     try {
-      await this.initialize();
+      const urlsToCrawl = await this.initialize();
+
+      // If we have cached URLs to crawl, crawl them
+      if (urlsToCrawl.size > 0) {
+        console.log(`\nCrawling ${urlsToCrawl.size} URLs from cached pages...`);
+        for (const url of urlsToCrawl) {
+          if (this.pageCount >= this.maxPages) {
+            break;
+          }
+          await this.crawlPage(url);
+        }
+      }
+
+      // Always crawl the base URL (in case there are new pages or no cache)
       await this.crawlPage(this.baseUrl);
+
       await this.close();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
