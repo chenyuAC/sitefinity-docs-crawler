@@ -432,9 +432,105 @@ export class SitefinityCrawler {
     this.allMarkdownContent = [];
     /** @type {Map<string, CachedPageData>} - Cache of fresh page data indexed by URL */
     this.cachedPages = new Map();
+    /** @type {Set<string>} - Queue of URLs remaining to crawl */
+    this.urlQueue = new Set();
+    /** @type {Map<string, string>} - Redirect mappings: source URL -> final URL */
+    this.redirectCache = new Map();
 
     // Selectors for content extraction
     this.selectors = DEFAULT_SELECTORS;
+  }
+
+  /**
+   * Get redirect cache filename for a URL
+   * @param {string} url - Source URL
+   * @returns {string} Cache filename
+   */
+  getRedirectCacheFilename(url) {
+    const filename = urlToFilename(url).replace('.json', '.redirect.json');
+    return path.join(this.progressDir, filename);
+  }
+
+  /**
+   * Load redirect from cache file
+   * @param {string} url - Source URL
+   * @returns {string | null} Redirect target URL or null if not cached
+   */
+  loadRedirectFromCache(url) {
+    const filename = this.getRedirectCacheFilename(url);
+    if (fs.existsSync(filename)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(filename, 'utf-8'));
+        // Check if redirect is stale (using same threshold as pages)
+        if (this.staleThreshold > 0) {
+          const now = Date.now();
+          const cachedAt = new Date(data.cachedAt).getTime();
+          const age = now - cachedAt;
+          if (age >= this.staleThreshold * 1000) {
+            return null; // Stale redirect
+          }
+        }
+        return data.target;
+      } catch (error) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Save redirect mapping to cache file
+   * @param {string} source - Source URL
+   * @param {string} target - Target URL after redirect
+   * @returns {void}
+   */
+  saveRedirectToCache(source, target) {
+    const filename = this.getRedirectCacheFilename(source);
+    const data = {
+      source: source,
+      target: target,
+      cachedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(filename, JSON.stringify(data, null, 2));
+  }
+
+  /**
+   * Load all redirect mappings from progress directory
+   * @returns {void}
+   */
+  loadAllRedirects() {
+    if (!fs.existsSync(this.progressDir)) {
+      return;
+    }
+
+    const files = fs.readdirSync(this.progressDir).filter(f => f.endsWith('.redirect.json'));
+    let loadedCount = 0;
+
+    for (const file of files) {
+      try {
+        const filepath = path.join(this.progressDir, file);
+        const data = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
+
+        // Check if redirect is stale
+        if (this.staleThreshold > 0) {
+          const now = Date.now();
+          const cachedAt = new Date(data.cachedAt).getTime();
+          const age = now - cachedAt;
+          if (age >= this.staleThreshold * 1000) {
+            continue; // Skip stale redirects
+          }
+        }
+
+        this.redirectCache.set(data.source, data.target);
+        loadedCount++;
+      } catch (error) {
+        // Skip invalid files
+      }
+    }
+
+    if (loadedCount > 0) {
+      console.log(`Loaded ${loadedCount} redirect mappings from cache`);
+    }
   }
 
   /**
@@ -531,10 +627,8 @@ export class SitefinityCrawler {
       for (const link of links) {
         extractedCount++;
 
-        // Convert link to filename to check if we already have it cached
-        const linkFilename = urlToFilename(link);
-
-        if (!freshFilenames.has(linkFilename)) {
+        // Check if we've already visited this URL (more reliable than filename check)
+        if (!this.visited.has(link)) {
           // This URL is not in our fresh cache - add it to crawl queue
           urlsToCrawl.add(link);
         }
@@ -596,6 +690,9 @@ export class SitefinityCrawler {
     if (!fs.existsSync(this.progressDir)) {
       fs.mkdirSync(this.progressDir, { recursive: true });
     }
+
+    // Load redirect mappings from individual cache files
+    this.loadAllRedirects();
 
     // Load cached progress and get URLs to crawl
     const urlsToCrawl = await this.loadCachedProgress();
@@ -669,6 +766,13 @@ export class SitefinityCrawler {
       return;
     }
 
+    // Check redirect cache - if this URL redirects to something we've visited, skip it
+    const cachedRedirect = this.redirectCache.get(url);
+    if (cachedRedirect && this.visited.has(cachedRedirect)) {
+      console.log(`Using cached redirect: ${url} → ${cachedRedirect} (already visited)`);
+      return;
+    }
+
     // Check if we've already crawled this page's canonical version
     const canonicalUrl = this.getCanonicalUrl(url);
     const hasVersion = this.extractVersion(url);
@@ -683,6 +787,19 @@ export class SitefinityCrawler {
       console.log(`Found versioned URL: ${url} (version ${hasVersion})`);
       console.log(`Attempting to crawl canonical (latest) version first: ${canonicalUrl}`);
 
+      // Check redirect cache first
+      const cachedRedirect = this.redirectCache.get(canonicalUrl);
+      if (cachedRedirect) {
+        console.log(`Using cached redirect: ${canonicalUrl} → ${cachedRedirect}`);
+        if (this.visited.has(cachedRedirect)) {
+          console.log(`Canonical version redirects to already-visited URL: ${cachedRedirect}`);
+          return; // Skip since we already have this content
+        }
+        // Crawl the canonical URL (will redirect to cached destination)
+        await this.crawlPage(canonicalUrl);
+        return;
+      }
+
       // Try to crawl the canonical URL first
       if (!this.context) {
         throw new Error('Browser context not initialized');
@@ -690,16 +807,52 @@ export class SitefinityCrawler {
 
       const testPage = await this.context.newPage();
       let canonicalExists = false;
+      let finalUrl = canonicalUrl;
 
       try {
-        const response = await testPage.goto(canonicalUrl, {
-          waitUntil: 'domcontentloaded',
-          timeout: 60000
-        });
+        // Retry logic with progressive timeout
+        const maxRetries = 3;
+        let response = null;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          const timeout = 10000 * attempt; // 10s, 20s, 30s
+
+          try {
+            if (attempt > 1) {
+              console.log(`Re-attempt ${attempt}/${maxRetries} for canonical check (timeout: ${timeout / 1000}s)`);
+            }
+            response = await testPage.goto(canonicalUrl, {
+              waitUntil: 'domcontentloaded',
+              timeout: timeout
+            });
+            break; // Success
+          } catch (error) {
+            if (attempt < maxRetries) {
+              console.log(`Canonical check attempt ${attempt} failed, retrying...`);
+            } else {
+              throw error;
+            }
+          }
+        }
+
+        // Get the final URL after redirects
+        finalUrl = testPage.url().split('#')[0].split('?')[0];
+
+        // Cache the redirect mapping if URL changed
+        if (finalUrl !== canonicalUrl) {
+          this.redirectCache.set(canonicalUrl, finalUrl);
+          this.saveRedirectToCache(canonicalUrl, finalUrl);
+        }
 
         // Check if the page loaded successfully (not 404)
         canonicalExists = response ? response.ok() : false;
         await testPage.close();
+
+        // Check if the final URL (after redirect) is already visited
+        if (canonicalExists && this.visited.has(finalUrl)) {
+          console.log(`Canonical version redirects to already-visited URL: ${finalUrl}`);
+          return; // Skip since we already have this content
+        }
 
         if (canonicalExists) {
           console.log(`Canonical version exists, crawling: ${canonicalUrl}`);
@@ -728,9 +881,13 @@ export class SitefinityCrawler {
     this.visitedCanonical.add(canonicalUrl);
     this.pageCount++;
 
+    // Remove from queue if it was queued
+    this.urlQueue.delete(url);
+
     const totalPages = this.cachedCount + this.pageCount;
     const maxTotal = this.maxPages === Infinity ? 'unlimited' : this.maxPages;
-    console.log(`\n[${totalPages} total: ${this.cachedCount} cached + ${this.pageCount} new] [fetching ${this.pageCount}/${maxTotal}] ${url}`);
+    const queueInfo = this.urlQueue.size > 0 ? ` [queue: ${this.urlQueue.size} URLs]` : '';
+    console.log(`\n[${totalPages} total: ${this.cachedCount} cached + ${this.pageCount} new] [fetching ${this.pageCount}/${maxTotal}]${queueInfo} ${url}`);
 
     if (!this.context) {
       throw new Error('Browser context not initialized');
@@ -768,6 +925,29 @@ export class SitefinityCrawler {
         }
       }
 
+      // Get the final URL after any redirects
+      const finalUrl = page.url().split('#')[0].split('?')[0];
+
+      // Cache the redirect mapping if URL changed
+      if (finalUrl !== url) {
+        this.redirectCache.set(url, finalUrl);
+        this.saveRedirectToCache(url, finalUrl);
+      }
+
+      // If the page redirected to a different URL that we've already visited, skip it
+      if (finalUrl !== url && this.visited.has(finalUrl)) {
+        console.log(`Page redirected to already-visited URL: ${finalUrl}, skipping`);
+        await page.close();
+        return;
+      }
+
+      // Mark the final URL as visited too (in case of redirect)
+      if (finalUrl !== url) {
+        console.log(`Page redirected from ${url} to ${finalUrl}`);
+        this.visited.add(finalUrl);
+        this.visitedCanonical.add(this.getCanonicalUrl(finalUrl));
+      }
+
       // Extract content
       const content = await this.extractContent(page, url);
 
@@ -777,6 +957,13 @@ export class SitefinityCrawler {
       // Extract and queue links
       const links = await this.extractLinks(page);
       console.log(`Found ${links.length} documentation links`);
+
+      // Add new links to queue
+      for (const link of links) {
+        if (!this.visited.has(link) && !this.urlQueue.has(link)) {
+          this.urlQueue.add(link);
+        }
+      }
 
       await page.close();
 
@@ -850,6 +1037,8 @@ export class SitefinityCrawler {
       await this.browser.close();
     }
 
+    // Note: Redirects are saved individually as they're discovered, no need to save here
+
     // Generate summary
     const summary = {
       totalPages: this.pageCount,
@@ -905,6 +1094,9 @@ export class SitefinityCrawler {
     try {
       const urlsToCrawl = await this.initialize();
 
+      // Initialize the queue with URLs from cache
+      this.urlQueue = new Set(urlsToCrawl);
+
       // If we have cached URLs to crawl, crawl them
       if (urlsToCrawl.size > 0) {
         console.log(`\nCrawling ${urlsToCrawl.size} URLs from cached pages...`);
@@ -917,6 +1109,9 @@ export class SitefinityCrawler {
       }
 
       // Always crawl the base URL (in case there are new pages or no cache)
+      if (!this.visited.has(this.baseUrl)) {
+        this.urlQueue.add(this.baseUrl);
+      }
       await this.crawlPage(this.baseUrl);
 
       await this.close();

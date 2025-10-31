@@ -9,6 +9,7 @@
     "test": "node --test",
     "test:sample": "node --test test/sampler.mjs",
     "test:dedup": "node --test test/version-dedup-test.mjs",
+    "test:redirects": "node --test test/redirect-cache.mjs",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

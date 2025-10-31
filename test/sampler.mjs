@@ -42,9 +42,16 @@ async function sampleSelectors() {
   });
 
   const urls = [
+    // Regular pages (no redirect, no version)
     'https://www.progress.com/documentation/sitefinity-cms',
     'https://www.progress.com/documentation/sitefinity-cms/architecture-renderer',
-    'https://www.progress.com/documentation/sitefinity-cms/renderer-proxy-logic'
+    'https://www.progress.com/documentation/sitefinity-cms/renderer-proxy-logic',
+
+    // Test redirect handling: this URL redirects to 'set-up-the-project'
+    'https://www.progress.com/documentation/sitefinity-cms/configure-and-start-a-project',
+
+    // Test versioned URL (should work as fallback if canonical doesn't exist)
+    'https://www.progress.com/documentation/sitefinity-cms/152/install-sitefinity'
   ];
 
   for (const url of urls) {
@@ -58,6 +65,12 @@ async function sampleSelectors() {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
+
+    // Check if URL redirected
+    const finalUrl = page.url().split('#')[0].split('?')[0];
+    if (finalUrl !== url) {
+      console.log(`\n⚠️  Redirect detected: ${url} → ${finalUrl}`);
+    }
 
     // Use the crawler's extraction function
     const content = await extractPageContent(page, DEFAULT_SELECTORS.excludeSelectors);
