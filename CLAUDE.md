@@ -40,6 +40,13 @@ npm run crawl -- Infinity 0
 ```
 Arguments: `maxPages` (default: Infinity), `staleThreshold` in seconds (default: 86400 = 1 day, 0 = no cache)
 
+### Regenerate markdown files
+```bash
+# Regenerate all .md files and llms-full.txt from cached JSON/HTML
+npm run regenerate
+```
+This is useful after changing the markdown template (e.g., removing `**Crawled:**` timestamps). It rebuilds all markdown files from existing JSON and HTML cache without re-crawling.
+
 ### Run tests
 ```bash
 # Run all tests

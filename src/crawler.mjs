@@ -328,7 +328,6 @@ export function contentToMarkdown(content, turndownService) {
     '',
     `**URL:** ${content.url}`,
     breadcrumbLine,
-    `**Crawled:** ${new Date().toISOString()}`,
     '',
     '---',
     ''
@@ -1066,7 +1065,7 @@ export class SitefinityCrawler {
       '',
       '---',
       '',
-      ...this.allMarkdownContent.map((md, i) => `\n\n## Document ${i + 1}\n\n${md}`)
+      ...this.allMarkdownContent.map(md => `\n\n${md}`)
     ].join('\n');
 
     fs.writeFileSync(

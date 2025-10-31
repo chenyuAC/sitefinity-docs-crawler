@@ -101,7 +101,7 @@ async function sampleSelectors() {
     '',
     '---',
     '',
-    ...allMarkdownContent.map((md, i) => `\n\n## Document ${i + 1}\n\n${md}`)
+    ...allMarkdownContent.map(md => `\n\n${md}`)
   ].join('\n');
 
   const outputFilepath = path.join(outputDir, 'llms-full.sample.txt');
